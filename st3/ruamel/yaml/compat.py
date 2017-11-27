@@ -67,7 +67,7 @@ else:
 
     def to_unicode(s):
         # type: (str) -> unicode
-        return unicode(s)
+        return unicode(s)    # NOQA
 
 if PY3:
     string_types = str
@@ -81,12 +81,14 @@ if PY3:
     import io
     StringIO = io.StringIO
     BytesIO = io.BytesIO
+    # have unlimited precision
+    no_limit_int = int
 
 else:
-    string_types = basestring
-    integer_types = (int, long)
+    string_types = basestring    # NOQA
+    integer_types = (int, long)  # NOQA
     class_types = (type, types.ClassType)
-    text_type = unicode
+    text_type = unicode          # NOQA
     binary_type = str
 
     # to allow importing
@@ -95,6 +97,8 @@ else:
     StringIO = _StringIO
     import cStringIO
     BytesIO = cStringIO.StringIO
+    # have unlimited precision
+    no_limit_int = long  # NOQA not available on Python 3
 
 if False:  # MYPY
     # StreamType = Union[BinaryIO, IO[str], IO[unicode],  StringIO]
@@ -114,12 +118,20 @@ def with_metaclass(meta, *bases):
     """Create a base class with a metaclass."""
     return meta("NewBase", bases, {})
 
+
 DBG_TOKEN = 1
 DBG_EVENT = 2
 DBG_NODE = 4
 
 
 _debug = None  # type: Union[None, int]
+if 'RUAMELDEBUG' in os.environ:
+    _debugx = os.environ.get('RUAMELDEBUG')
+    if _debugx is None:
+        _debug = 0
+    else:
+        _debug = int(_debugx)
+
 
 if bool(_debug):
     class ObjectCounter(object):

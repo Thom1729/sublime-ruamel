@@ -32,13 +32,18 @@ from __future__ import print_function, absolute_import, division, unicode_litera
 
 from ruamel.yaml.error import MarkedYAMLError
 from ruamel.yaml.tokens import *                # NOQA
-from ruamel.yaml.compat import utf8, unichr, PY3, check_anchorname_char
+from ruamel.yaml.compat import utf8, unichr, PY3, check_anchorname_char, nprint  # NOQA
 
 if False:  # MYPY
     from typing import Any, Dict, Optional, List, Union, Text  # NOQA
     from ruamel.yaml.compat import VersionType  # NOQA
 
 __all__ = ['Scanner', 'RoundTripScanner', 'ScannerError']
+
+
+_THE_END = u'\0\r\n\x85\u2028\u2029'
+_THE_END_SPACE_TAB = u'\0 \t\r\n\x85\u2028\u2029'
+_SPACE_TAB = u' \t'
 
 
 class ScannerError(MarkedYAMLError):
@@ -76,6 +81,7 @@ class Scanner(object):
         if self.loader is not None and getattr(self.loader, '_scanner', None) is None:
             self.loader._scanner = self
         self.reset_scanner()
+        self.first_time = False
 
     def reset_scanner(self):
         # type: () -> None
@@ -352,7 +358,7 @@ class Scanner(object):
         # position.
         if self.allow_simple_key:
             self.remove_possible_simple_key()
-            token_number = self.tokens_taken+len(self.tokens)
+            token_number = self.tokens_taken + len(self.tokens)
             key = SimpleKey(
                 token_number, required,
                 self.reader.index, self.reader.line, self.reader.column,
@@ -590,7 +596,7 @@ class Scanner(object):
             # Add KEY.
             key = self.possible_simple_keys[self.flow_level]
             del self.possible_simple_keys[self.flow_level]
-            self.tokens.insert(key.token_number-self.tokens_taken,
+            self.tokens.insert(key.token_number - self.tokens_taken,
                                KeyToken(key.mark, key.mark))
 
             # If this key starts a new block mapping, we need to add
@@ -598,7 +604,7 @@ class Scanner(object):
             if not self.flow_level:
                 if self.add_indent(key.column):
                     self.tokens.insert(
-                        key.token_number-self.tokens_taken,
+                        key.token_number - self.tokens_taken,
                         BlockMappingStartToken(key.mark, key.mark))
 
             # There cannot be two simple keys one after another.
@@ -608,7 +614,7 @@ class Scanner(object):
         else:
 
             # Block context needs additional checks.
-            # (Do we really need them? They will be catched by the parser
+            # (Do we really need them? They will be caught by the parser
             # anyway.)
             if not self.flow_level:
 
@@ -726,7 +732,7 @@ class Scanner(object):
         # DOCUMENT-START:   ^ '---' (' '|'\n')
         if self.reader.column == 0:
             if self.reader.prefix(3) == u'---'  \
-                    and self.reader.peek(3) in u'\0 \t\r\n\x85\u2028\u2029':
+                    and self.reader.peek(3) in _THE_END_SPACE_TAB:
                 return True
         return None
 
@@ -735,14 +741,14 @@ class Scanner(object):
         # DOCUMENT-END:     ^ '...' (' '|'\n')
         if self.reader.column == 0:
             if self.reader.prefix(3) == u'...'  \
-                    and self.reader.peek(3) in u'\0 \t\r\n\x85\u2028\u2029':
+                    and self.reader.peek(3) in _THE_END_SPACE_TAB:
                 return True
         return None
 
     def check_block_entry(self):
         # type: () -> Any
         # BLOCK-ENTRY:      '-' (' '|'\n')
-        return self.reader.peek(1) in u'\0 \t\r\n\x85\u2028\u2029'
+        return self.reader.peek(1) in _THE_END_SPACE_TAB
 
     def check_key(self):
         # type: () -> Any
@@ -750,15 +756,19 @@ class Scanner(object):
         if bool(self.flow_level):
             return True
         # KEY(block context):   '?' (' '|'\n')
-        return self.reader.peek(1) in u'\0 \t\r\n\x85\u2028\u2029'
+        return self.reader.peek(1) in _THE_END_SPACE_TAB
 
     def check_value(self):
         # type: () -> Any
         # VALUE(flow context):  ':'
-        if bool(self.flow_level):
-            return True
+        if self.scanner_processing_version == (1, 1):
+            if bool(self.flow_level):
+                return True
+        else:
+            if bool(self.flow_level) and self.reader.peek(1) in '\'"{[]}':
+                return True
         # VALUE(block context): ':' (' '|'\n')
-        return self.reader.peek(1) in u'\0 \t\r\n\x85\u2028\u2029'
+        return self.reader.peek(1) in _THE_END_SPACE_TAB
 
     def check_plain(self):
         # type: () -> Any
@@ -775,9 +785,22 @@ class Scanner(object):
         # '-' character) because we want the flow context to be space
         # independent.
         ch = self.reader.peek()
-        return ch not in u'\0 \t\r\n\x85\u2028\u2029-?:,[]{}#&*!|>\'\"%@`' or \
-            (self.reader.peek(1) not in u'\0 \t\r\n\x85\u2028\u2029' and
-             (ch == u'-' or (not self.flow_level and ch in u'?:')))
+        if self.scanner_processing_version == (1, 1):
+            return ch not in u'\0 \t\r\n\x85\u2028\u2029-?:,[]{}#&*!|>\'\"%@`' or \
+                (self.reader.peek(1) not in _THE_END_SPACE_TAB and
+                 (ch == u'-' or (not self.flow_level and ch in u'?:')))
+        # YAML 1.2
+        if ch not in u'\0 \t\r\n\x85\u2028\u2029-?:,[]{}#&*!|>\'\"%@`':
+            # ###################                ^ ???
+            return True
+        ch1 = self.reader.peek(1)
+        if ch == '-' and ch1 not in _THE_END_SPACE_TAB:
+            return True
+        if ch == ':' and bool(self.flow_level) and ch1 not in _SPACE_TAB:
+            return True
+
+        return (self.reader.peek(1) not in _THE_END_SPACE_TAB and
+                (ch == u'-' or (not self.flow_level and ch in u'?:')))
 
     # Scanners.
 
@@ -809,7 +832,7 @@ class Scanner(object):
             while self.reader.peek() == u' ':
                 self.reader.forward()
             if self.reader.peek() == u'#':
-                while self.reader.peek() not in u'\0\r\n\x85\u2028\u2029':
+                while self.reader.peek() not in _THE_END:
                     self.reader.forward()
             if self.scan_line_break():
                 if not self.flow_level:
@@ -833,7 +856,7 @@ class Scanner(object):
             end_mark = self.reader.get_mark()
         else:
             end_mark = self.reader.get_mark()
-            while self.reader.peek() not in u'\0\r\n\x85\u2028\u2029':
+            while self.reader.peek() not in _THE_END:
                 self.reader.forward()
         self.scan_directive_ignored_line(start_mark)
         return DirectiveToken(name, value, start_mark, end_mark)
@@ -939,10 +962,10 @@ class Scanner(object):
         while self.reader.peek() == u' ':
             self.reader.forward()
         if self.reader.peek() == u'#':
-            while self.reader.peek() not in u'\0\r\n\x85\u2028\u2029':
+            while self.reader.peek() not in _THE_END:
                 self.reader.forward()
         ch = self.reader.peek()
-        if ch not in u'\0\r\n\x85\u2028\u2029':
+        if ch not in _THE_END:
             raise ScannerError(
                 "while scanning a directive", start_mark,
                 "expected a comment or a line break, but found %r"
@@ -1006,7 +1029,7 @@ class Scanner(object):
                     "expected '>', but found %r" % utf8(self.reader.peek()),
                     self.reader.get_mark())
             self.reader.forward()
-        elif ch in u'\0 \t\r\n\x85\u2028\u2029':
+        elif ch in _THE_END_SPACE_TAB:
             handle = None
             suffix = u'!'
             self.reader.forward()
@@ -1052,7 +1075,7 @@ class Scanner(object):
         self.scan_block_scalar_ignored_line(start_mark)
 
         # Determine the indentation level and go to the first non-empty line.
-        min_indent = self.indent+1
+        min_indent = self.indent + 1
         if increment is None:
             # no increment and top level, min_indent could be 0
             if min_indent < 1 and \
@@ -1066,7 +1089,7 @@ class Scanner(object):
         else:
             if min_indent < 1:
                 min_indent = 1
-            indent = min_indent+increment-1
+            indent = min_indent + increment - 1
             breaks, end_mark = self.scan_block_scalar_breaks(indent)
         line_break = u''
 
@@ -1075,12 +1098,17 @@ class Scanner(object):
             chunks.extend(breaks)
             leading_non_space = self.reader.peek() not in u' \t'
             length = 0
-            while self.reader.peek(length) not in u'\0\r\n\x85\u2028\u2029':
+            while self.reader.peek(length) not in _THE_END:
                 length += 1
             chunks.append(self.reader.prefix(length))
             self.reader.forward(length)
             line_break = self.scan_line_break()
             breaks, end_mark = self.scan_block_scalar_breaks(indent)
+            if style in '|>' and min_indent == 0:
+                # at the beginning of a line, if in block style see if
+                # end of document/start_new_document
+                if self.check_document_start() or self.check_document_end():
+                    break
             if self.reader.column == indent and self.reader.peek() != u'\0':
 
                 # Unfortunately, folding rules are ambiguous.
@@ -1187,10 +1215,10 @@ class Scanner(object):
         while self.reader.peek() == u' ':
             self.reader.forward()
         if self.reader.peek() == u'#':
-            while self.reader.peek() not in u'\0\r\n\x85\u2028\u2029':
+            while self.reader.peek() not in _THE_END:
                 self.reader.forward()
         ch = self.reader.peek()
-        if ch not in u'\0\r\n\x85\u2028\u2029':
+        if ch not in _THE_END:
             raise ScannerError(
                 "while scanning a block scalar", start_mark,
                 "expected a comment or a line break, but found %r"
@@ -1253,30 +1281,30 @@ class Scanner(object):
                            style)
 
     ESCAPE_REPLACEMENTS = {
-        u'0':   u'\0',
-        u'a':   u'\x07',
-        u'b':   u'\x08',
-        u't':   u'\x09',
-        u'\t':  u'\x09',
-        u'n':   u'\x0A',
-        u'v':   u'\x0B',
-        u'f':   u'\x0C',
-        u'r':   u'\x0D',
-        u'e':   u'\x1B',
-        u' ':   u'\x20',
-        u'\"':  u'\"',
-        u'/':   u'/',  # as per http://www.json.org/
-        u'\\':  u'\\',
-        u'N':   u'\x85',
-        u'_':   u'\xA0',
-        u'L':   u'\u2028',
-        u'P':   u'\u2029',
+        u'0': u'\0',
+        u'a': u'\x07',
+        u'b': u'\x08',
+        u't': u'\x09',
+        u'\t': u'\x09',
+        u'n': u'\x0A',
+        u'v': u'\x0B',
+        u'f': u'\x0C',
+        u'r': u'\x0D',
+        u'e': u'\x1B',
+        u' ': u'\x20',
+        u'\"': u'\"',
+        u'/': u'/',  # as per http://www.json.org/
+        u'\\': u'\\',
+        u'N': u'\x85',
+        u'_': u'\xA0',
+        u'L': u'\u2028',
+        u'P': u'\u2029',
     }
 
     ESCAPE_CODES = {
-        u'x':   2,
-        u'u':   4,
-        u'U':   8,
+        u'x': 2,
+        u'u': 4,
+        u'U': 8,
     }
 
     def scan_flow_scalar_non_spaces(self, double, start_mark):
@@ -1364,7 +1392,7 @@ class Scanner(object):
             # separators.
             prefix = self.reader.prefix(3)
             if (prefix == u'---' or prefix == u'...')   \
-                    and self.reader.peek(3) in u'\0 \t\r\n\x85\u2028\u2029':
+                    and self.reader.peek(3) in _THE_END_SPACE_TAB:
                 raise ScannerError("while scanning a quoted scalar",
                                    start_mark,
                                    "found unexpected document separator",
@@ -1386,7 +1414,7 @@ class Scanner(object):
         chunks = []  # type: List[Any]
         start_mark = self.reader.get_mark()
         end_mark = start_mark
-        indent = self.indent+1
+        indent = self.indent + 1
         # We allow zero indentation for scalars, but then we need to check for
         # document separators at the beginning of the line.
         # if indent == 0:
@@ -1399,17 +1427,19 @@ class Scanner(object):
             while True:
                 ch = self.reader.peek(length)
                 if (ch == u':' and
-                   self.reader.peek(length+1) not in u'\0 \t\r\n\x85\u2028\u2029'):
+                   self.reader.peek(length + 1) not in _THE_END_SPACE_TAB):
                     pass
-                elif (ch in u'\0 \t\r\n\x85\u2028\u2029' or
+                elif (ch == u'?' and self.scanner_processing_version != (1, 1)):
+                    pass
+                elif (ch in _THE_END_SPACE_TAB or
                       (not self.flow_level and ch == u':' and
-                          self.reader.peek(length+1) in u'\0 \t\r\n\x85\u2028\u2029') or
+                          self.reader.peek(length + 1) in _THE_END_SPACE_TAB) or
                       (self.flow_level and ch in u',:?[]{}')):
                     break
                 length += 1
             # It's not clear what we should do with ':' in the flow context.
             if (self.flow_level and ch == u':' and
-               self.reader.peek(length+1) not in u'\0 \t\r\n\x85\u2028\u2029,[]{}'):
+               self.reader.peek(length + 1) not in u'\0 \t\r\n\x85\u2028\u2029,[]{}'):
                 self.reader.forward(length)
                 raise ScannerError(
                     "while scanning a plain scalar", start_mark,
@@ -1453,7 +1483,7 @@ class Scanner(object):
             self.allow_simple_key = True
             prefix = self.reader.prefix(3)
             if (prefix == u'---' or prefix == u'...')   \
-                    and self.reader.peek(3) in u'\0 \t\r\n\x85\u2028\u2029':
+                    and self.reader.peek(3) in _THE_END_SPACE_TAB:
                 return
             breaks = []
             while self.reader.peek() in u' \r\n\x85\u2028\u2029':
@@ -1463,7 +1493,7 @@ class Scanner(object):
                     breaks.append(self.scan_line_break())
                     prefix = self.reader.prefix(3)
                     if (prefix == u'---' or prefix == u'...')   \
-                       and self.reader.peek(3) in u'\0 \t\r\n\x85\u2028\u2029':
+                       and self.reader.peek(3) in _THE_END_SPACE_TAB:
                         return
             if line_break != u'\n':
                 chunks.append(line_break)
@@ -1615,7 +1645,6 @@ class RoundTripScanner(Scanner):
         if isinstance(self.tokens[0], CommentToken):
             comment = self.tokens.pop(0)
             self.tokens_taken += 1
-            # print('################ dropping', comment)
             comments.append(comment)
         while self.need_more_tokens():
             self.fetch_more_tokens()
@@ -1627,9 +1656,6 @@ class RoundTripScanner(Scanner):
                 # print 'dropping2', comment
                 comments.append(comment)
         if len(comments) >= 1:
-            # print('  len', len(comments), comments)
-            # print('  com', comments[0], comments[0].start_mark.line)
-            # print('  tok', self.tokens[0].end_mark.line)
             self.tokens[0].add_pre_comments(comments)
         # pull in post comment on e.g. ':'
         if not self.done and len(self.tokens) < 2:
@@ -1642,17 +1668,14 @@ class RoundTripScanner(Scanner):
             self.fetch_more_tokens()
         self._gather_comments()
         if bool(self.tokens):
+            # nprint('tk', self.tokens)
             # only add post comment to single line tokens:
             # scalar, value token. FlowXEndToken, otherwise
             # hidden streamtokens could get them (leave them and they will be
             # pre comments for the next map/seq
             if len(self.tokens) > 1 and \
-               isinstance(self.tokens[0], (
-                   ScalarToken,
-                   ValueToken,
-                   FlowSequenceEndToken,
-                   FlowMappingEndToken,
-                   )) and \
+               isinstance(self.tokens[0], (ScalarToken, ValueToken,
+                                           FlowSequenceEndToken, FlowMappingEndToken, )) and \
                isinstance(self.tokens[1], CommentToken) and \
                self.tokens[0].end_mark.line == self.tokens[1].start_mark.line:
                 self.tokens_taken += 1
@@ -1704,7 +1727,7 @@ class RoundTripScanner(Scanner):
                 start_mark = self.reader.get_mark()
                 comment = ch
                 self.reader.forward()
-                while ch not in u'\0\r\n\x85\u2028\u2029':
+                while ch not in _THE_END:
                     ch = self.reader.peek()
                     if ch == u'\0':  # don't gobble the end-of-stream character
                         break

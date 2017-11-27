@@ -9,6 +9,7 @@ from ruamel.yaml.compat import text_type, binary_type, to_unicode, PY2, PY3, ord
 from ruamel.yaml.scalarstring import (PreservedScalarString, SingleQuotedScalarString,
                                       DoubleQuotedScalarString)
 from ruamel.yaml.scalarint import ScalarInt, BinaryInt, OctalInt, HexInt, HexCapsInt
+from ruamel.yaml.scalarfloat import ScalarFloat
 from ruamel.yaml.timestamp import TimeStamp
 
 import datetime
@@ -30,6 +31,7 @@ __all__ = ['BaseRepresenter', 'SafeRepresenter', 'Representer',
 
 class RepresenterError(YAMLError):
     pass
+
 
 if PY2:
     def get_classobj_bases(cls):
@@ -274,10 +276,13 @@ class SafeRepresenter(BaseRepresenter):
 
     def represent_bool(self, data):
         # type: (Any) -> Any
-        if data:
-            value = u'true'
-        else:
-            value = u'false'
+        try:
+            value = self.dumper.boolean_representation[bool(data)]  # type: ignore
+        except AttributeError:
+            if data:
+                value = u'true'
+            else:
+                value = u'false'
         return self.represent_scalar(u'tag:yaml.org,2002:bool', value)
 
     def represent_int(self, data):
@@ -291,7 +296,7 @@ class SafeRepresenter(BaseRepresenter):
                                          text_type(data))
 
     inf_value = 1e300
-    while repr(inf_value) != repr(inf_value*inf_value):
+    while repr(inf_value) != repr(inf_value * inf_value):
         inf_value *= inf_value
 
     def represent_float(self, data):
@@ -304,15 +309,16 @@ class SafeRepresenter(BaseRepresenter):
             value = u'-.inf'
         else:
             value = to_unicode(repr(data)).lower()
-            # Note that in some cases `repr(data)` represents a float number
-            # without the decimal parts.  For instance:
-            #   >>> repr(1e17)
-            #   '1e17'
-            # Unfortunately, this is not a valid float representation according
-            # to the definition of the `!!float` tag.  We fix this by adding
-            # '.0' before the 'e' symbol.
-            if u'.' not in value and u'e' in value:
-                value = value.replace(u'e', u'.0e', 1)
+            if getattr(self.serializer, 'use_version', None) == (1, 1):
+                if u'.' not in value and u'e' in value:
+                    # Note that in some cases `repr(data)` represents a float number
+                    # without the decimal parts.  For instance:
+                    #   >>> repr(1e17)
+                    #   '1e17'
+                    # Unfortunately, this is not a valid float representation according
+                    # to the definition of the `!!float` tag in YAML 1.1.  We fix
+                    # this by adding '.0' before the 'e' symbol.
+                    value = value.replace(u'e', u'.0e', 1)
         return self.represent_scalar(u'tag:yaml.org,2002:float', value)
 
     def represent_list(self, data):
@@ -367,6 +373,7 @@ class SafeRepresenter(BaseRepresenter):
     def represent_undefined(self, data):
         # type: (Any) -> None
         raise RepresenterError("cannot represent an object: %s" % data)
+
 
 SafeRepresenter.add_representer(type(None),
                                 SafeRepresenter.represent_none)
@@ -485,7 +492,7 @@ class Representer(SafeRepresenter):
     def represent_module(self, data):
         # type: (Any) -> Any
         return self.represent_scalar(
-            u'tag:yaml.org,2002:python/module:'+data.__name__, u'')
+            u'tag:yaml.org,2002:python/module:' + data.__name__, u'')
 
     if PY2:
         def represent_instance(self, data):
@@ -519,7 +526,7 @@ class Representer(SafeRepresenter):
                 state = data.__dict__
             if args is None and isinstance(state, dict):
                 return self.represent_mapping(
-                    u'tag:yaml.org,2002:python/object:'+class_name, state)
+                    u'tag:yaml.org,2002:python/object:' + class_name, state)
             if isinstance(state, dict) and not state:
                 return self.represent_sequence(
                     u'tag:yaml.org,2002:python/object/new:' +
@@ -529,7 +536,7 @@ class Representer(SafeRepresenter):
                 value['args'] = args
             value['state'] = state  # type: ignore
             return self.represent_mapping(
-                u'tag:yaml.org,2002:python/object/new:'+class_name, value)
+                u'tag:yaml.org,2002:python/object/new:' + class_name, value)
 
     def represent_object(self, data):
         # type: (Any) -> Any
@@ -558,7 +565,7 @@ class Representer(SafeRepresenter):
             reduce = data.__reduce__()
         else:
             raise RepresenterError("cannot represent object: %r" % data)
-        reduce = (list(reduce)+[None]*5)[:5]
+        reduce = (list(reduce) + [None] * 5)[:5]
         function, args, state, listitems, dictitems = reduce
         args = list(args)
         if state is None:
@@ -579,10 +586,10 @@ class Representer(SafeRepresenter):
         if not args and not listitems and not dictitems \
                 and isinstance(state, dict) and newobj:
             return self.represent_mapping(
-                u'tag:yaml.org,2002:python/object:'+function_name, state)
+                u'tag:yaml.org,2002:python/object:' + function_name, state)
         if not listitems and not dictitems  \
                 and isinstance(state, dict) and not state:
-            return self.represent_sequence(tag+function_name, args)
+            return self.represent_sequence(tag + function_name, args)
         value = {}
         if args:
             value['args'] = args
@@ -592,7 +599,8 @@ class Representer(SafeRepresenter):
             value['listitems'] = listitems
         if dictitems:
             value['dictitems'] = dictitems
-        return self.represent_mapping(tag+function_name, value)
+        return self.represent_mapping(tag + function_name, value)
+
 
 if PY2:
     Representer.add_representer(str,
@@ -634,8 +642,8 @@ Representer.add_multi_representer(object,
                                   Representer.represent_object)
 
 
-from ruamel.yaml.comments import CommentedMap, CommentedOrderedMap, CommentedSeq, \
-    CommentedKeySeq, CommentedSet, comment_attrib, merge_attrib    # NOQA
+from ruamel.yaml.comments import (CommentedMap, CommentedOrderedMap, CommentedSeq,
+    CommentedKeySeq, CommentedSet, comment_attrib, merge_attrib, TaggedScalar)    # NOQA
 
 
 class RoundTripRepresenter(SafeRepresenter):
@@ -644,7 +652,7 @@ class RoundTripRepresenter(SafeRepresenter):
 
     def __init__(self, default_style=None, default_flow_style=None, dumper=None):
         # type: (Any, Any, Any) -> None
-        if default_flow_style is None:
+        if not hasattr(dumper, 'typ') and default_flow_style is None:
             default_flow_style = False
         SafeRepresenter.__init__(self, default_style=default_style,
                                  default_flow_style=default_flow_style,
@@ -745,6 +753,77 @@ class RoundTripRepresenter(SafeRepresenter):
             s = format(data, 'X')
         return self.insert_underscore('0x', s, data._underscore)
 
+    def represent_scalar_float(self, data):
+        # type: (Any) -> Any
+        """ this is way more complicated """
+        value = None
+        if data != data or (data == 0.0 and data == 1.0):
+            value = u'.nan'
+        elif data == self.inf_value:
+            value = u'.inf'
+        elif data == -self.inf_value:
+            value = u'-.inf'
+        if value:
+            return self.represent_scalar(u'tag:yaml.org,2002:float', value)
+        if data._exp is None and data._prec > 0 and data._prec == data._width - 1:
+            # no exponent, but trailing dot
+            value = u'{}{:d}.'.format(data._m_sign if data._m_sign else u'', abs(int(data)))
+        elif data._exp is None:
+            # no exponent, "normal" dot
+            prec = data._prec
+            if prec < 1:
+                prec = 1
+            # print('dw2', data._width, prec)
+            ms = data._m_sign if data._m_sign else u''
+            # -1 for the dot
+            value = u'{}{:0{}.{}f}'.format(ms, abs(data), data._width - len(ms),
+                                           data._width - prec - 1)
+            while len(value) < data._width:
+                value += u'0'
+        else:
+            # exponent
+            m, es = u'{:{}e}'.format(data, data._width).split('e')
+            w = data._width if data._prec > 0 else (data._width + 1)
+            if data < 0:
+                w += 1
+            m = m[:w]
+            e = int(es)
+            m1, m2 = m.split('.')  # always second?
+            while len(m1) + len(m2) < data._width - (1 if data._prec >= 0 else 0):
+                m2 += u'0'
+            if data._m_sign and data > 0:
+                m1 = '+' + m1
+            esgn = u'+' if data._e_sign else u''
+            if data._prec < 0:   # mantissa without dot
+                if m2 != u'0':
+                    e -= len(m2)
+                else:
+                    m2 = u''
+                while (len(m1) + len(m2) - (1 if data._m_sign else 0)) < data._width:
+                    m2 += u'0'
+                    e -= 1
+                value = m1 + m2 + data._exp + u'{:{}0{}d}'.format(e, esgn, data._e_width)
+            elif data._prec == 0:   # mantissa with trailing dot
+                e -= len(m2)
+                value = m1 + m2 + u'.' + data._exp + u'{:{}0{}d}'.format(
+                    e, esgn, data._e_width)
+            else:
+                if data._m_lead0 > 0:
+                    m2 = u'0' * (data._m_lead0 - 1) + m1 + m2
+                    m1 = u'0'
+                    m2 = m2[:-data._m_lead0]  # these should be zeros
+                    e += data._m_lead0
+                while len(m1) < data._prec:
+                    m1 += m2[0]
+                    m2 = m2[1:]
+                    e -= 1
+                value = m1 + u'.' + m2 + data._exp + u'{:{}0{}d}'.format(
+                    e, esgn, data._e_width)
+
+        if value is None:
+            value = to_unicode(repr(data)).lower()
+        return self.represent_scalar(u'tag:yaml.org,2002:float', value)
+
     def represent_sequence(self, tag, sequence, flow_style=None):
         # type: (Any, Any, Any) -> Any
         value = []  # type: List[Any]
@@ -765,6 +844,16 @@ class RoundTripRepresenter(SafeRepresenter):
         best_style = True
         try:
             comment = getattr(sequence, comment_attrib)
+            node.comment = comment.comment
+            # reset any comment already printed information
+            if node.comment and node.comment[1]:
+                for ct in node.comment[1]:
+                    ct.reset()
+            item_comments = comment.items
+            for v in item_comments.values():
+                if v and v[1]:
+                    for ct in v[1]:
+                        ct.reset()
             item_comments = comment.items
             node.comment = comment.comment
             try:
@@ -903,6 +992,7 @@ class RoundTripRepresenter(SafeRepresenter):
         for item_key in omap:
             item_val = omap[item_key]
             node_item = self.represent_data({item_key: item_val})
+            # node_item.flow_style = False
             # node item has two scalars in value: node_key and node_value
             item_comment = item_comments.get(item_key)
             if item_comment:
@@ -985,9 +1075,10 @@ class RoundTripRepresenter(SafeRepresenter):
         except AttributeError:
             t = None
         if t:
-            while t and t[0] == '!':
-                t = t[1:]
-            tag = 'tag:yaml.org,2002:' + t
+            if t.startswith('!!'):
+                tag = 'tag:yaml.org,2002:' + t[2:]
+            else:
+                tag = t
         else:
             tag = u'tag:yaml.org,2002:map'
         return self.represent_mapping(tag, data)
@@ -1004,6 +1095,13 @@ class RoundTripRepresenter(SafeRepresenter):
         if _yaml['tz']:
             value += _yaml['tz']
         return self.represent_scalar(u'tag:yaml.org,2002:timestamp', to_unicode(value))
+
+    def represent_tagged_scalar(self, data):
+        try:
+            tag = data.tag.value
+        except AttributeError:
+            tag = None
+        return self.represent_scalar(tag, data.value, style=data.style)
 
 
 RoundTripRepresenter.add_representer(type(None),
@@ -1041,6 +1139,10 @@ RoundTripRepresenter.add_representer(
     HexCapsInt,
     RoundTripRepresenter.represent_hex_caps_int)
 
+RoundTripRepresenter.add_representer(
+    ScalarFloat,
+    RoundTripRepresenter.represent_scalar_float)
+
 RoundTripRepresenter.add_representer(CommentedSeq,
                                      RoundTripRepresenter.represent_list)
 
@@ -1057,6 +1159,9 @@ if sys.version_info >= (2, 7):
 
 RoundTripRepresenter.add_representer(CommentedSet,
                                      RoundTripRepresenter.represent_set)
+
+RoundTripRepresenter.add_representer(TaggedScalar,
+                                     RoundTripRepresenter.represent_tagged_scalar)
 
 RoundTripRepresenter.add_representer(TimeStamp,
                                      RoundTripRepresenter.represent_datetime)

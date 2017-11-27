@@ -8,6 +8,7 @@ these are not really related, formatting could be factored out as
 a separate base
 """
 
+import sys
 import copy
 
 from collections import MutableSet, Sized, Set
@@ -176,6 +177,10 @@ class Tag(object):
         # type: () -> None
         self.value = None
 
+    def __repr__(self):
+        # type: () -> Any
+        return '{0.__class__.__name__}({0.value!r})'.format(self)
+
 
 class CommentedBase(object):
     @property
@@ -245,13 +250,15 @@ class CommentedBase(object):
 
         if after_indent is None:
             after_indent = indent + 2
-        if before and before[-1] == '\n':
+        if before and (len(before) > 1) and before[-1] == '\n':
             before = before[:-1]  # strip final newline if there
         if after and after[-1] == '\n':
             after = after[:-1]  # strip final newline if there
         start_mark = CommentMark(indent)
         c = self.ca.items.setdefault(key, [None, [], None, None])
-        if before:
+        if before == '\n':
+            c[1].append(comment_token('', start_mark))
+        elif before:
             for com in before.split('\n'):
                 c[1].append(comment_token(com, start_mark))
         if after:
@@ -389,7 +396,7 @@ class CommentedSeq(list, CommentedBase):
         for list_index in sorted(self.ca.items, reverse=True):
             if list_index < idx:
                 break
-            self.ca.items[list_index+1] = self.ca.items.pop(list_index)
+            self.ca.items[list_index + 1] = self.ca.items.pop(list_index)
 
     def pop(self, idx=None):
         # type: (Any) -> Any
@@ -398,14 +405,14 @@ class CommentedSeq(list, CommentedBase):
         for list_index in sorted(self.ca.items):
             if list_index < idx:
                 continue
-            self.ca.items[list_index-1] = self.ca.items.pop(list_index)
+            self.ca.items[list_index - 1] = self.ca.items.pop(list_index)
         return res
 
     def _yaml_get_column(self, key):
         # type: (Any) -> Any
         column = None
         sel_idx = None
-        pre, post = key-1, key+1
+        pre, post = key - 1, key + 1
         if pre in self.ca.items:
             sel_idx = pre
         elif post in self.ca.items:
@@ -472,7 +479,7 @@ class CommentedKeySeq(tuple, CommentedBase):
         # type: (Any) -> Any
         column = None
         sel_idx = None
-        pre, post = key-1, key+1
+        pre, post = key - 1, key + 1
         if pre in self.ca.items:
             sel_idx = pre
         elif post in self.ca.items:
@@ -677,8 +684,8 @@ class CommentedMap(ordereddict, CommentedBase):
             if level >= len(key_list):
                 if level > len(key_list):
                     raise IndexError
-                return d[key_list[level-1]]
-            return get_one_level(key_list, level+1, d[key_list[level-1]])
+                return d[key_list[level - 1]]
+            return get_one_level(key_list, level + 1, d[key_list[level - 1]])
 
         try:
             return get_one_level(key, 1, self)
@@ -846,14 +853,14 @@ class CommentedMap(ordereddict, CommentedBase):
             yield x, ordereddict.__getitem__(self, x)
         done = []  # type: List[Any]  # list of processed merge items, kept for masking
         for merged in getattr(self, merge_attrib, []):
-            for x in merged[1]:
+            for x, v in merged[1].items():
                 if ordereddict.__contains__(self, x):
                     continue
                 for y in done:
                     if x in y:
                         break
                 else:
-                    yield x, ordereddict.__getitem__(merged[1], x)
+                    yield x, v  # ordereddict.__getitem__(merged[1], x)
             done.append(merged[1])
 
     if PY2:
@@ -934,3 +941,30 @@ class CommentedSet(MutableSet, CommentedMap):
     def __repr__(self):
         # type: () -> str
         return 'set({0!r})'.format(self.odict.keys())
+
+
+class TaggedScalar(CommentedBase):
+    # the value and style attributes are set during roundtrip construction
+    def __str__(self):
+        return self.value
+
+
+def dump_comments(d, name='', sep='.', out=sys.stdout):
+    # type: (Any, str, str, Any) -> None
+    """
+    recurisively dump domments all but the toplevel preceded by the path
+    in dotted form x.0.a
+    """
+    if isinstance(d, dict) and hasattr(d, 'ca'):
+        if name:
+            print(name)
+        print(d.ca, file=out)  # type: ignore
+        for k in d:
+            dump_comments(d[k], name=(name + sep + k) if name else k, sep=sep, out=out)
+    elif isinstance(d, list) and hasattr(d, 'ca'):
+        if name:
+            print(name)
+        print(d.ca, file=out)  # type: ignore
+        for idx, k in enumerate(d):
+            dump_comments(k, name=(name + sep + str(idx)) if name else str(idx),
+                          sep=sep, out=out)
