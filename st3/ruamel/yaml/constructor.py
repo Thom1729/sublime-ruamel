@@ -11,18 +11,20 @@ import sys
 import types
 import warnings
 
-from ruamel.yaml.error import (MarkedYAMLError, MarkedYAMLFutureWarning)
+from ruamel.yaml.error import (MarkedYAMLError, MarkedYAMLFutureWarning,
+                               MantissaNoDotYAML1_1Warning)
 from ruamel.yaml.nodes import *                               # NOQA
 from ruamel.yaml.nodes import (SequenceNode, MappingNode, ScalarNode)
 from ruamel.yaml.compat import (utf8, builtins_module, to_str, PY2, PY3,  # NOQA
                                 ordereddict, text_type, nprint, version_tnf)
 from ruamel.yaml.comments import *                               # NOQA
 from ruamel.yaml.comments import (CommentedMap, CommentedOrderedMap, CommentedSet,
-                                  CommentedKeySeq, CommentedSeq)
+                                  CommentedKeySeq, CommentedSeq, TaggedScalar)
 from ruamel.yaml.scalarstring import *                           # NOQA
 from ruamel.yaml.scalarstring import (PreservedScalarString, SingleQuotedScalarString,
                                       DoubleQuotedScalarString, ScalarString)
 from ruamel.yaml.scalarint import ScalarInt, BinaryInt, OctalInt, HexInt, HexCapsInt
+from ruamel.yaml.scalarfloat import ScalarFloat
 from ruamel.yaml.timestamp import TimeStamp
 
 if False:  # MYPY
@@ -360,12 +362,12 @@ class SafeConstructor(BaseConstructor):
 
     # YAML 1.2 spec doesn't mention yes/no etc any more, 1.1 does
     bool_values = {
-        u'yes':     True,
-        u'no':      False,
-        u'true':    True,
-        u'false':   False,
-        u'on':      True,
-        u'off':     False,
+        u'yes': True,
+        u'no': False,
+        u'true': True,
+        u'false': False,
+        u'on': True,
+        u'off': False,
     }
 
     def construct_yaml_bool(self, node):
@@ -385,54 +387,59 @@ class SafeConstructor(BaseConstructor):
         if value_s == '0':
             return 0
         elif value_s.startswith('0b'):
-            return sign*int(value_s[2:], 2)
+            return sign * int(value_s[2:], 2)
         elif value_s.startswith('0x'):
-            return sign*int(value_s[2:], 16)
+            return sign * int(value_s[2:], 16)
         elif value_s.startswith('0o'):
-            return sign*int(value_s[2:], 8)
+            return sign * int(value_s[2:], 8)
         elif self.resolver.processing_version != (1, 2) and value_s[0] == '0':
-            return sign*int(value_s, 8)
+            return sign * int(value_s, 8)
         elif self.resolver.processing_version != (1, 2) and ':' in value_s:
             digits = [int(part) for part in value_s.split(':')]
             digits.reverse()
             base = 1
             value = 0
             for digit in digits:
-                value += digit*base
+                value += digit * base
                 base *= 60
-            return sign*value
+            return sign * value
         else:
-            return sign*int(value_s)
+            return sign * int(value_s)
 
     inf_value = 1e300
-    while inf_value != inf_value*inf_value:
+    while inf_value != inf_value * inf_value:
         inf_value *= inf_value
-    nan_value = -inf_value/inf_value   # Trying to make a quiet NaN (like C99).
+    nan_value = -inf_value / inf_value   # Trying to make a quiet NaN (like C99).
 
     def construct_yaml_float(self, node):
         # type: (Any) -> float
-        value_s = to_str(self.construct_scalar(node))
-        value_s = value_s.replace('_', '').lower()
+        value_so = to_str(self.construct_scalar(node))
+        value_s = value_so.replace('_', '').lower()
         sign = +1
         if value_s[0] == '-':
             sign = -1
         if value_s[0] in '+-':
             value_s = value_s[1:]
         if value_s == '.inf':
-            return sign*self.inf_value
+            return sign * self.inf_value
         elif value_s == '.nan':
             return self.nan_value
-        elif ':' in value_s:
+        elif self.resolver.processing_version != (1, 2) and ':' in value_s:
             digits = [float(part) for part in value_s.split(':')]
             digits.reverse()
             base = 1
             value = 0.0
             for digit in digits:
-                value += digit*base
+                value += digit * base
                 base *= 60
-            return sign*value
+            return sign * value
         else:
-            return sign*float(value_s)
+            if self.resolver.processing_version != (1, 2) and 'e' in value_s:
+                # value_s is lower case independent of input
+                mantissa, exponent = value_s.split('e')
+                if '.' not in mantissa:
+                    warnings.warn(MantissaNoDotYAML1_1Warning(node, value_so))
+            return sign * float(value_s)
 
     if PY3:
         def construct_yaml_binary(self, node):
@@ -479,7 +486,15 @@ class SafeConstructor(BaseConstructor):
     def construct_yaml_timestamp(self, node, values=None):
         # type: (Any, Any) -> Any
         if values is None:
-            match = self.timestamp_regexp.match(node.value)
+            try:
+                match = self.timestamp_regexp.match(node.value)
+            except TypeError:
+                match = None
+            if match is None:
+                raise ConstructorError(
+                    None, None,
+                    'failed to construct timestamp from "{}"'.format(node.value),
+                    node.start_mark)
             values = match.groupdict()
         year = int(values['year'])
         month = int(values['month'])
@@ -614,6 +629,7 @@ class SafeConstructor(BaseConstructor):
             "could not determine a constructor for the tag %r" %
             utf8(node.tag),
             node.start_mark)
+
 
 SafeConstructor.add_constructor(
     u'tag:yaml.org,2002:null',
@@ -864,6 +880,7 @@ class Constructor(SafeConstructor):
         # type: (Any, Any) -> Any
         return self.construct_python_object_apply(suffix, node, newobj=True)
 
+
 Constructor.add_constructor(
     u'tag:yaml.org,2002:python/none',
     Constructor.construct_yaml_null)
@@ -981,7 +998,7 @@ class RoundTripConstructor(SafeConstructor):
             if underscore is not None:
                 underscore[1] = value_su[2] == '_'
                 underscore[2] = len(value_su[2:]) > 1 and value_su[-1] == '_'
-            return BinaryInt(sign*int(value_s[2:], 2), width=width,   # type: ignore
+            return BinaryInt(sign * int(value_s[2:], 2), width=width,   # type: ignore
                              underscore=underscore)
         elif value_s.startswith('0x'):
             # default to lower-case if no a-fA-F in string
@@ -997,40 +1014,102 @@ class RoundTripConstructor(SafeConstructor):
             if underscore is not None:
                 underscore[1] = value_su[2] == '_'
                 underscore[2] = len(value_su[2:]) > 1 and value_su[-1] == '_'
-            return hex_fun(sign*int(value_s[2:], 16), width=width, underscore=underscore)
+            return hex_fun(sign * int(value_s[2:], 16), width=width, underscore=underscore)
         elif value_s.startswith('0o'):
             if self.resolver.processing_version > (1, 1) and value_s[2] == '0':
                 width = len(value_s[2:])
             if underscore is not None:
                 underscore[1] = value_su[2] == '_'
                 underscore[2] = len(value_su[2:]) > 1 and value_su[-1] == '_'
-            return OctalInt(sign*int(value_s[2:], 8), width=width,  # type: ignore
+            return OctalInt(sign * int(value_s[2:], 8), width=width,  # type: ignore
                             underscore=underscore)
         elif self.resolver.processing_version != (1, 2) and value_s[0] == '0':
-            return sign*int(value_s, 8)
+            return sign * int(value_s, 8)
         elif self.resolver.processing_version != (1, 2) and ':' in value_s:
             digits = [int(part) for part in value_s.split(':')]
             digits.reverse()
             base = 1
             value = 0
             for digit in digits:
-                value += digit*base
+                value += digit * base
                 base *= 60
-            return sign*value
+            return sign * value
         elif self.resolver.processing_version > (1, 1) and value_s[0] == '0':
             # not an octal, an integer with leading zero(s)
             if underscore is not None:
                 # cannot have a leading underscore
                 underscore[2] = len(value_su) > 1 and value_su[-1] == '_'
-            return ScalarInt(sign*int(value_s), width=len(value_s),  # type: ignore
+            return ScalarInt(sign * int(value_s), width=len(value_s),  # type: ignore
                              underscore=underscore)
         elif underscore:
             # cannot have a leading underscore
             underscore[2] = len(value_su) > 1 and value_su[-1] == '_'
-            return ScalarInt(sign*int(value_s), width=None,  # type: ignore
+            return ScalarInt(sign * int(value_s), width=None,  # type: ignore
                              underscore=underscore)
         else:
-            return sign*int(value_s)
+            return sign * int(value_s)
+
+    def construct_yaml_float(self, node):
+        # type: (Any) -> Any
+        def leading_zeros(v):
+            # type: (Any) -> int
+            lead0 = 0
+            idx = 0
+            while idx < len(v) and v[idx] in '0.':
+                if v[idx] == '0':
+                    lead0 += 1
+                idx += 1
+            return lead0
+        # underscore = None
+        m_sign = False  # type: Any
+        value_so = to_str(self.construct_scalar(node))
+        value_s = value_so.replace('_', '').lower()
+        sign = +1
+        if value_s[0] == '-':
+            sign = -1
+        if value_s[0] in '+-':
+            m_sign = value_s[0]
+            value_s = value_s[1:]
+        if value_s == '.inf':
+            return sign * self.inf_value
+        if value_s == '.nan':
+            return self.nan_value
+        if self.resolver.processing_version != (1, 2) and ':' in value_s:
+            digits = [float(part) for part in value_s.split(':')]
+            digits.reverse()
+            base = 1
+            value = 0.0
+            for digit in digits:
+                value += digit * base
+                base *= 60
+            return sign * value
+        if 'e' in value_s:
+            try:
+                mantissa, exponent = value_so.split('e')
+                exp = 'e'
+            except ValueError:
+                mantissa, exponent = value_so.split('E')
+                exp = 'E'
+            if self.resolver.processing_version != (1, 2):
+                # value_s is lower case independent of input
+                if '.' not in mantissa:
+                    warnings.warn(MantissaNoDotYAML1_1Warning(node, value_so))
+            lead0 = leading_zeros(mantissa)
+            width = len(mantissa)
+            prec = mantissa.find('.')
+            if m_sign:
+                width -= 1
+            e_width = len(exponent)
+            e_sign = exponent[0] in '+-'
+            # print('sf', width, prec, m_sign, exp, e_width, e_sign)
+            return ScalarFloat(sign * float(value_s),  # type: ignore
+                               width=width, prec=prec, m_sign=m_sign,
+                               m_lead0=lead0, exp=exp, e_width=e_width, e_sign=e_sign)
+        width = len(value_so)
+        prec = value_so.index('.')  # you can use index, this would not be float without dot
+        lead0 = leading_zeros(value_so)
+        return ScalarFloat(sign * float(value_s),  # type: ignore
+                           width=width, prec=prec, m_sign=m_sign, m_lead0=lead0)
 
     def construct_yaml_str(self, node):
         # type: (Any) -> Any
@@ -1276,6 +1355,17 @@ class RoundTripConstructor(SafeConstructor):
         yield data
         self.construct_mapping(node, data)
 
+    def construct_yaml_object(self, node, cls):
+        # type: (Any, Any) -> Any
+        data = cls.__new__(cls)
+        yield data
+        if hasattr(data, '__setstate__'):
+            state = SafeConstructor.construct_mapping(self, node, deep=True)
+            data.__setstate__(state)
+        else:
+            state = SafeConstructor.construct_mapping(self, node)
+            data.__dict__.update(state)
+
     def construct_yaml_omap(self, node):
         # type: (Any) -> Any
         # Note: we do now check for duplicate keys
@@ -1329,25 +1419,43 @@ class RoundTripConstructor(SafeConstructor):
     def construct_undefined(self, node):
         # type: (Any) -> Any
         try:
-            data = CommentedMap()
-            data._yaml_set_line_col(node.start_mark.line, node.start_mark.column)
-            if node.flow_style is True:
-                data.fa.set_flow_style()
-            elif node.flow_style is False:
-                data.fa.set_block_style()
-            data.yaml_set_tag(node.tag)
-            yield data
-            self.construct_mapping(node, data)
+            if isinstance(node, MappingNode):
+                data = CommentedMap()
+                data._yaml_set_line_col(node.start_mark.line, node.start_mark.column)
+                if node.flow_style is True:
+                    data.fa.set_flow_style()
+                elif node.flow_style is False:
+                    data.fa.set_block_style()
+                data.yaml_set_tag(node.tag)
+                yield data
+                self.construct_mapping(node, data)
+                return
+            elif isinstance(node, ScalarNode):
+                data = TaggedScalar()
+                data.value = self.construct_scalar(node)
+                data.style = node.style
+                data.yaml_set_tag(node.tag)
+                yield data
+                return
         except:
-            raise ConstructorError(
-                None, None,
-                "could not determine a constructor for the tag %r" %
-                utf8(node.tag),
-                node.start_mark)
+            pass
+        raise ConstructorError(
+            None, None,
+            "could not determine a constructor for the tag %r" %
+            utf8(node.tag),
+            node.start_mark)
 
     def construct_yaml_timestamp(self, node, values=None):
         # type: (Any, Any) -> Any
-        match = self.timestamp_regexp.match(node.value)
+        try:
+            match = self.timestamp_regexp.match(node.value)
+        except TypeError:
+            match = None
+        if match is None:
+            raise ConstructorError(
+                None, None,
+                'failed to construct timestamp from "{}"'.format(node.value),
+                node.start_mark)
         values = match.groupdict()
         if not values['hour']:
             return SafeConstructor.construct_yaml_timestamp(self, node, values)

@@ -41,7 +41,7 @@ enforce = object()
 
 
 # YAML is an acronym, i.e. spoken: rhymes with "camel". And thus a
-# subset of abbreviations, which should all caps according to PEP8
+# subset of abbreviations, which should be all caps according to PEP8
 
 class YAML(object):
     def __init__(self, _kw=enforce, typ=None, pure=False, plug_ins=None):
@@ -60,6 +60,7 @@ class YAML(object):
                             "one was given ({!r})".format(self.__class__.__name__, _kw))
 
         self.typ = 'rt' if typ is None else typ
+        self.pure = pure
         self.plug_ins = []  # type: List[Any]
         for pu in ([] if plug_ins is None else plug_ins) + self.official_plug_ins():
             file_name = pu.replace('/', '.')
@@ -69,7 +70,9 @@ class YAML(object):
         self.Reader = None       # type: Any
         self.Scanner = None      # type: Any
         self.Serializer = None   # type: Any
+        self.default_flow_style = None  # type: Any
         if self.typ == 'rt':
+            self.default_flow_style = False
             # no optimized rt-dumper yet
             self.Emitter = ruamel.yaml.emitter.Emitter                       # type: Any
             self.Serializer = ruamel.yaml.serializer.Serializer              # type: Any
@@ -93,7 +96,8 @@ class YAML(object):
             self.Composer = ruamel.yaml.composer.Composer
             self.Constructor = ruamel.yaml.constructor.BaseConstructor
         elif self.typ == 'unsafe':
-            self.Emitter = ruamel.yaml.emitter.Emitter
+            self.Emitter = ruamel.yaml.emitter.Emitter if pure or CEmitter is None \
+                else CEmitter
             self.Representer = ruamel.yaml.representer.Representer
             self.Parser = ruamel.yaml.parser.Parser if pure or CParser is None else CParser
             self.Composer = ruamel.yaml.composer.Composer
@@ -108,21 +112,24 @@ class YAML(object):
                     'typ "{}"not recognised (need to install plug-in?)'.format(self.typ))
         self.stream = None
         self.canonical = None
-        self.indent = None
+        self.old_indent = None
         self.width = None
         self.line_break = None
-        self.block_seq_indent = None
+
+        self.map_indent = None
+        self.sequence_indent = None
+        self.sequence_dash_offset = 0
+
         self.top_level_colon_align = None
         self.prefix_colon = None
         self.version = None
         self.preserve_quotes = None
         self.allow_duplicate_keys = False  # duplicate keys in map, set
-        self.encoding = None
+        self.encoding = 'utf-8'
         self.explicit_start = None
         self.explicit_end = None
         self.tags = None
         self.default_style = None
-        self.default_flow_style = None
         self.top_level_block_style_scalar_no_indent_error_1_1 = False
 
     @property
@@ -196,12 +203,20 @@ class YAML(object):
         attr = '_' + sys._getframe().f_code.co_name
         if not hasattr(self, attr):
             if self.Emitter is not CEmitter:
-                setattr(self, attr, self.Emitter(
+                _emitter = self.Emitter(
                     None, canonical=self.canonical,
-                    indent=self.indent, width=self.width,
+                    indent=self.old_indent, width=self.width,
                     allow_unicode=self.allow_unicode, line_break=self.line_break,
-                    block_seq_indent=self.block_seq_indent,
-                    dumper=self))
+                    prefix_colon=self.prefix_colon,
+                    dumper=self)
+                setattr(self, attr, _emitter)
+                if self.map_indent is not None:
+                    _emitter.best_map_indent = self.map_indent
+                if self.sequence_indent is not None:
+                    _emitter.best_sequence_indent = self.sequence_indent
+                if self.sequence_dash_offset is not None:
+                    _emitter.sequence_dash_offset = self.sequence_dash_offset
+                    # _emitter.block_seq_indent = self.sequence_dash_offset
             else:
                 if getattr(self, '_stream', None) is None:
                     # wait for the stream
@@ -268,7 +283,9 @@ class YAML(object):
         if not hasattr(stream, 'read') and hasattr(stream, 'open'):
             # pathlib.Path() instance
             with stream.open('r') as fp:  # type: ignore
-                yield self.load_all(fp, _kw=enforce)
+                for d in self.load_all(fp, _kw=enforce):
+                    yield d
+                raise StopIteration()
         # if skip is None:
         #     skip = []
         # elif isinstance(skip, int):
@@ -340,7 +357,6 @@ class YAML(object):
         # type: (Any, StreamType, Any, Any) -> Any
         """
         Serialize a sequence of Python objects into a YAML stream.
-        If stream is None, return the produced string instead.
         """
         if not hasattr(stream, 'write') and hasattr(stream, 'open'):
             # pathlib.Path() instance
@@ -380,7 +396,10 @@ class YAML(object):
             delattr(self, "_serializer")
             delattr(self, "_emitter")
         if transform:
-            fstream.write(transform(stream.getvalue()))   # type: ignore
+            val = stream.getvalue()  # type: ignore
+            if self.encoding:
+                val = val.decode(self.encoding)
+            fstream.write(transform(val))
         return None
 
     def get_serializer_representer_emitter(self, stream, tlca):
@@ -423,7 +442,13 @@ class YAML(object):
                                           default_flow_style=default_flow_style)
                 rslvr.__init__(selfx)
         self._stream = stream
-        dumper = XDumper(stream)
+        dumper = XDumper(stream, default_style=self.default_style,
+                         default_flow_style=self.default_flow_style,
+                         canonical=self.canonical, indent=self.old_indent, width=self.width,
+                         allow_unicode=self.allow_unicode, line_break=self.line_break,
+                         explicit_start=self.explicit_start,
+                         explicit_end=self.explicit_end,
+                         version=self.version, tags=self.tags)
         self._emitter = self._serializer = dumper
         return dumper, dumper, dumper
 
@@ -452,8 +477,97 @@ class YAML(object):
         res = [x.replace(gpbd, '')[1:-3] for x in glob.glob(bd + '/*/__plug_in__.py')]
         return res
 
+    def register_class(self, cls):
+        # type:(Any) -> None
+        """
+        register a class for dumping loading
+        - if it has attribute yaml_tag use that to register, else use class name
+        - if it has methods to_yaml/from_yaml use those to dump/load else dump attributes
+          as mapping
+        """
+        tag = getattr(cls, 'yaml_tag', '!' + cls.__name__)
+        try:
+            self.representer.add_representer(cls, cls.to_yaml)
+        except AttributeError:
+            def t_y(representer, data):
+                # type: (Any, Any) -> Any
+                return representer.represent_yaml_object(
+                    tag, data, cls, flow_style=representer.default_flow_style)
+
+            self.representer.add_representer(cls, t_y)
+        try:
+            self.constructor.add_constructor(tag, cls.from_yaml)
+        except AttributeError:
+            def f_y(constructor, node):
+                # type: (Any, Any) -> Any
+                return constructor.construct_yaml_object(node, cls)
+
+            self.constructor.add_constructor(tag, f_y)
+
+    # ### backwards compatibility
+    def _indent(self, mapping=None, sequence=None, offset=None):
+        # type: (Any, Any, Any) -> None
+        if mapping is not None:
+            self.map_indent = mapping
+        if sequence is not None:
+            self.sequence_indent = sequence
+        if offset is not None:
+            self.sequence_dash_offset = offset
+
+    @property
+    def indent(self):
+        # type: () -> Any
+        return self._indent
+
+    @indent.setter
+    def indent(self, val):
+        # type: (Any) -> None
+        self.old_indent = val
+
+    @property
+    def block_seq_indent(self):
+        # type: () -> Any
+        return self.sequence_dash_offset
+
+    @block_seq_indent.setter
+    def block_seq_indent(self, val):
+        # type: (Any) -> None
+        self.sequence_dash_offset = val
+
+
+def yaml_object(yml):
+    # type: (Any) -> Any
+    """ decorator for classes that needs to dump/load objects
+    The tag for such objects is taken from the class attribute yaml_tag (or the
+    class name in lowercase in case unavailable)
+    If methods to_yaml and/or from_yaml are available, these are called for dumping resp.
+    loading, default routines (dumping a mapping of the attributes) used otherwise.
+    """
+    def yo_deco(cls):
+        # type: (Any) -> Any
+        tag = getattr(cls, 'yaml_tag', '!' + cls.__name__)
+        try:
+            yml.representer.add_representer(cls, cls.to_yaml)
+        except AttributeError:
+            def t_y(representer, data):
+                # type: (Any, Any) -> Any
+                return representer.represent_yaml_object(
+                    tag, data, cls, flow_style=representer.default_flow_style)
+
+            yml.representer.add_representer(cls, t_y)
+        try:
+            yml.constructor.add_constructor(tag, cls.from_yaml)
+        except AttributeError:
+            def f_y(constructor, node):
+                # type: (Any, Any) -> Any
+                return constructor.construct_yaml_object(node, cls)
+
+            yml.constructor.add_constructor(tag, f_y)
+        return cls
+    return yo_deco
 
 ########################################################################################
+
 
 def scan(stream, Loader=Loader):
     # type: (StreamTextType, Any) -> Any
@@ -606,6 +720,7 @@ def emit(events, stream=None, Dumper=Dumper,
             dumper.dispose()   # cyaml
     if getvalue is not None:
         return getvalue()
+
 
 enc = None if PY3 else 'utf-8'
 

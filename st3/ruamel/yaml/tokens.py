@@ -4,6 +4,8 @@
 if False:  # MYPY
     from typing import Any, Dict, Optional, List  # NOQA
 
+SHOWLINES = True
+
 
 class Token(object):
     __slots__ = 'start_mark', 'end_mark', '_comment',
@@ -15,12 +17,18 @@ class Token(object):
 
     def __repr__(self):
         # type: () -> Any
-        attributes = [key for key in self.__slots__ if not key.endswith('_mark') and
-                      hasattr('self', key)]
+        # attributes = [key for key in self.__slots__ if not key.endswith('_mark') and
+        #               hasattr('self', key)]
+        attributes = [key for key in self.__slots__ if not key.endswith('_mark')]
         attributes.sort()
-        arguments = ', '.join(['%s=%r' % (key, getattr(self, key))
+        arguments = u', '.join([u'%s=%r' % (key, getattr(self, key))
                                for key in attributes])
-        return '%s(%s)' % (self.__class__.__name__, arguments)
+        if SHOWLINES:
+            try:
+                arguments += u', line: ' + str(self.start_mark.line)
+            except:
+                pass
+        return u'{}({})'.format(self.__class__.__name__, arguments)
 
     def add_post_comment(self, comment):
         # type: (Any) -> None
@@ -57,8 +65,6 @@ class Token(object):
         # don't push beyond last element
         if isinstance(target, StreamEndToken):
             return
-        if isinstance(self, ValueToken) and isinstance(target, BlockEntryToken):
-            return
         delattr(self, '_comment')
         tc = target.comment
         if not tc:  # target comment, just insert
@@ -66,6 +72,7 @@ class Token(object):
             if empty:
                 c = [c[0], c[1], None, None, c[0]]
             target._comment = c
+            # nprint('mco2:', self, target, target.comment, empty)
             return self
         if c[0] and tc[0] or c[1] and tc[1]:
             raise NotImplementedError('overlap in comment %r %r' % c, tc)
@@ -170,6 +177,10 @@ class KeyToken(Token):
     __slots__ = ()
     id = '?'
 
+    # def x__repr__(self):
+    #     return 'KeyToken({})'.format(
+    #         self.start_mark.buffer[self.start_mark.index:].split(None, 1)[0])
+
 
 class ValueToken(Token):
     __slots__ = ()
@@ -241,3 +252,13 @@ class CommentToken(Token):
         # type: () -> None
         if hasattr(self, 'pre_done'):
             delattr(self, 'pre_done')
+
+    def __repr__(self):
+        # type: () -> Any
+        v = u'{!r}'.format(self.value)
+        if SHOWLINES:
+            try:
+                v += u', line: ' + str(self.start_mark.line)
+            except:
+                pass
+        return 'CommentToken({})'.format(v)

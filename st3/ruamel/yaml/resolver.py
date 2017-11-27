@@ -31,13 +31,22 @@ implicit_resolvers = [
         |true|True|TRUE|false|False|FALSE
         |on|On|ON|off|Off|OFF)$''', re.X),
         list(u'yYnNtTfFoO')),
-    ([(1, 2), (1, 1)],
+    ([(1, 2)],
         u'tag:yaml.org,2002:float',
         re.compile(u'''^(?:
          [-+]?(?:[0-9][0-9_]*)\\.[0-9_]*(?:[eE][-+]?[0-9]+)?
         |[-+]?(?:[0-9][0-9_]*)(?:[eE][-+]?[0-9]+)
         |\\.[0-9_]+(?:[eE][-+][0-9]+)?
-        |[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\\.[0-9_]*
+        |[-+]?\\.(?:inf|Inf|INF)
+        |\\.(?:nan|NaN|NAN))$''', re.X),
+        list(u'-+0123456789.')),
+    ([(1, 1)],
+        u'tag:yaml.org,2002:float',
+        re.compile(u'''^(?:
+         [-+]?(?:[0-9][0-9_]*)\\.[0-9_]*(?:[eE][-+]?[0-9]+)?
+        |[-+]?(?:[0-9][0-9_]*)(?:[eE][-+]?[0-9]+)
+        |\\.[0-9_]+(?:[eE][-+][0-9]+)?
+        |[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\\.[0-9_]*  # sexagesimal float
         |[-+]?\\.(?:inf|Inf|INF)
         |\\.(?:nan|NaN|NAN))$''', re.X),
         list(u'-+0123456789.')),
@@ -54,7 +63,7 @@ implicit_resolvers = [
         |[-+]?0?[0-7_]+
         |[-+]?(?:0|[1-9][0-9_]*)
         |[-+]?0x[0-9a-fA-F_]+
-        |[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+)$''', re.X),
+        |[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+)$''', re.X),  # sexagesimal int
         list(u'-+0123456789')),
     ([(1, 2), (1, 1)],
         u'tag:yaml.org,2002:merge',
@@ -240,7 +249,7 @@ class BaseResolver(object):
     def check_resolver_prefix(self, depth, path, kind,
                               current_node, current_index):
         # type: (int, Text, Any, Any, Any) -> bool
-        node_check, index_check = path[depth-1]
+        node_check, index_check = path[depth - 1]
         if isinstance(node_check, string_types):
             if current_node.tag != node_check:
                 return False
@@ -295,6 +304,7 @@ class BaseResolver(object):
 
 class Resolver(BaseResolver):
     pass
+
 
 Resolver.add_implicit_resolver_base(
     u'tag:yaml.org,2002:bool',
